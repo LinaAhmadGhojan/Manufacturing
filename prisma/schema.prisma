@@ -1,0 +1,697 @@
+// MFP — Manufacturing from raw materials.
+// Clean redesign of the legacy Amwal\MFP module: real foreign keys, enums instead
+// of magic chars, standalone master data (no external catalog/ms/organization).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────── Enums ─────────────
+
+enum QtyType {
+  FIXED
+  RATIO
+}
+
+enum PoStatus {
+  DRAFT
+  RELEASED
+  SUSPENDED
+  CLOSED
+}
+
+enum RequestStatus {
+  NEW
+  ACCEPTED
+  REJECTED
+}
+
+enum StepStatus {
+  PENDING
+  IN_PROGRESS
+  DONE
+  QC_PENDING
+  VERIFY
+  HOLDING
+  SCRAP
+  DELIVERED
+  LOCKED
+}
+
+enum QcResult {
+  PASS
+  FAIL
+}
+
+enum FailAction {
+  RETURN_TO_TECH
+  HOLD
+  SCRAP
+}
+
+enum StockMoveType {
+  COMMIT
+  CONSUME
+  RECEIVE
+  SCRAP
+  ADJUST
+  PURCHASE
+}
+
+enum PurchaseStatus {
+  OPEN
+  ORDERED
+  RECEIVED
+  CANCELLED
+}
+
+// ───────────── Organisation & master data ─────────────
+
+model Branch {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  name   String
+  city   String?
+  active Boolean @default(true)
+
+  stores Store[]
+  lines  ProductionLine[]
+  assets Asset[]
+  orders ProductionOrder[]
+}
+
+model Store {
+  id       Int     @id @default(autoincrement())
+  code     String  @unique
+  name     String
+  kind     String  @default("RAW") // RAW | FINISHED | SCRAP | WIP
+  branchId Int?
+  branch   Branch? @relation(fields: [branchId], references: [id])
+  active   Boolean @default(true)
+
+  rawLines ProductionLine[] @relation("RawStore")
+  fgLines  ProductionLine[] @relation("FgStore")
+}
+
+model Uom {
+  id   Int    @id @default(autoincrement())
+  code String @unique
+  name String
+}
+
+model Category {
+  id       Int    @id @default(autoincrement())
+  name     String @unique
+  products Product[]
+}
+
+model Supplier {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  name   String
+  phone  String?
+  email  String?
+  active Boolean @default(true)
+
+  purchases PurchaseRequest[]
+}
+
+model Client {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  name   String
+  phone  String?
+  active Boolean @default(true)
+
+  requests ProductionRequest[]
+}
+
+model Asset {
+  id       Int     @id @default(autoincrement())
+  code     String  @unique
+  name     String
+  branchId Int?
+  branch   Branch? @relation(fields: [branchId], references: [id])
+  hourRate Float   @default(0)
+  notes    String?
+  active   Boolean @default(true)
+
+  lineAssets   LineAsset[]
+  bomOpAssets  BomOpAsset[]
+  equipment    EquipmentEntry[]
+}
+
+model Parameter {
+  id        Int    @id @default(autoincrement())
+  code      String @unique
+  name      String
+  unit      String?
+  lowRange  Float  @default(0)
+  highRange Float  @default(0)
+
+  bomReadings BomOpReading[]
+  entries     ReadingEntry[]
+}
+
+model ExpenseType {
+  id   Int    @id @default(autoincrement())
+  code String @unique
+  name String
+
+  bomExpenses BomOpExpense[]
+  expenses    Expense[]
+}
+
+model SubProcess {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  name   String
+  active Boolean @default(true)
+
+  operations OperationSub[]
+  bomOps     BomOpSub[]
+}
+
+model Reason {
+  id   Int    @id @default(autoincrement())
+  name String
+  kind String @default("CLOSE") // CLOSE | SUSPEND | SCRAP | ADJUST
+}
+
+model Product {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique
+  name        String
+  kind        String   @default("RAW") // RAW | SEMI | FINISHED
+  categoryId  Int?
+  category    Category? @relation(fields: [categoryId], references: [id])
+  uom         String   @default("PCS")
+  barcode     String?
+  description String?
+  avgCost     Float    @default(0)
+  qtyOnHand   Float    @default(0)
+  minStock    Float    @default(0)
+  reorderQty  Float    @default(0)
+  serialBase  Boolean  @default(false)
+  requireBatch Boolean @default(false)
+  shelfLifeDays Int?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  batches      Batch[]
+  bomsMade     Bom[]
+  bomMaterials BomMaterial[]
+  poRaw        PoMaterial[]
+  moves        StockMove[]
+  consumptions Consumption[]
+  lineProducts LineProduct[]
+  purchases    PurchaseRequest[]
+}
+
+// Lot of a product (raw material received from a supplier, or a finished-goods production lot).
+model Batch {
+  id         Int      @id @default(autoincrement())
+  productId  Int
+  product    Product  @relation(fields: [productId], references: [id])
+  code       String
+  supplierId Int?
+  supplierRef String?
+  receivedAt DateTime @default(now())
+  expiryDate DateTime?
+  qtyIn      Float    @default(0)
+  qtyOnHand  Float    @default(0)
+  unitCost   Float    @default(0)
+  orderId    Int?     // set for finished-goods lots produced by an order
+
+  consumptions Consumption[]
+  moves        StockMove[]
+
+  @@unique([productId, code])
+}
+
+model Operation {
+  id             Int     @id @default(autoincrement())
+  code           String  @unique
+  shortName      String?
+  name           String
+  description    String?
+  requiresQc     Boolean @default(false)
+  requiresVerify Boolean @default(false)
+  active         Boolean @default(true)
+
+  bomOps       BomOperation[]
+  subProcesses OperationSub[]
+  team         TeamOperation[]
+  lineAssets   LineAsset[]
+  defaultFor   TeamMember[]
+}
+
+model OperationSub {
+  operationId  Int
+  operation    Operation  @relation(fields: [operationId], references: [id], onDelete: Cascade)
+  subProcessId Int
+  subProcess   SubProcess @relation(fields: [subProcessId], references: [id], onDelete: Cascade)
+
+  @@id([operationId, subProcessId])
+}
+
+model ProductionLine {
+  id          Int     @id @default(autoincrement())
+  code        String  @unique
+  name        String
+  description String?
+  branchId    Int?
+  branch      Branch? @relation(fields: [branchId], references: [id])
+  rawStoreId  Int?
+  rawStore    Store?  @relation("RawStore", fields: [rawStoreId], references: [id])
+  fgStoreId   Int?
+  fgStore     Store?  @relation("FgStore", fields: [fgStoreId], references: [id])
+  capacity    Float   @default(0)
+  active      Boolean @default(true)
+
+  orders   ProductionOrder[]
+  team     TeamMember[]
+  products LineProduct[]
+  assets   LineAsset[]
+}
+
+model LineProduct {
+  id        Int     @id @default(autoincrement())
+  lineId    Int
+  line      ProductionLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  productId Int
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  isDefault Boolean @default(true)
+
+  @@unique([lineId, productId])
+}
+
+model LineAsset {
+  id          Int     @id @default(autoincrement())
+  lineId      Int
+  line        ProductionLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  assetId     Int
+  asset       Asset   @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  operationId Int?
+  operation   Operation? @relation(fields: [operationId], references: [id])
+
+  @@unique([lineId, assetId])
+}
+
+model TeamMember {
+  id          Int     @id @default(autoincrement())
+  employeeNo  String? @unique
+  name        String
+  position    String?
+  phone       String?
+  hourRate    Float   @default(0)
+  lineId      Int?
+  line        ProductionLine? @relation(fields: [lineId], references: [id])
+  defaultOpId Int?
+  defaultOp   Operation? @relation(fields: [defaultOpId], references: [id])
+  isLeader    Boolean @default(false)
+  canHold     Boolean @default(false)
+  canQc       Boolean @default(false)
+  active      Boolean @default(true)
+
+  allowedOps TeamOperation[]
+  time       TimeEntry[]
+}
+
+model TeamOperation {
+  memberId    Int
+  member      TeamMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  operationId Int
+  operation   Operation  @relation(fields: [operationId], references: [id], onDelete: Cascade)
+
+  @@id([memberId, operationId])
+}
+
+model QcTemplate {
+  id        Int     @id @default(autoincrement())
+  name      String
+  specs     String?
+  genSerial Boolean @default(false)
+  active    Boolean @default(true)
+
+  points QcTemplatePoint[]
+  bomOps BomOperation[]
+}
+
+model QcTemplatePoint {
+  id         Int    @id @default(autoincrement())
+  templateId Int
+  template   QcTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  label      String
+  criteria   String?
+  essential  Boolean @default(false)
+}
+
+// ───────────── BOM ─────────────
+
+model Bom {
+  id          Int     @id @default(autoincrement())
+  name        String
+  productId   Int
+  product     Product @relation(fields: [productId], references: [id])
+  outputQty   Float   @default(1)
+  durationHrs Float   @default(0)
+  isDefault   Boolean @default(false)
+  serialBase  Boolean @default(false)
+  prodLevelQc Boolean @default(false)
+  remark      String?
+  // Free-form technical specs that feed serial formats (model, refrigerant, voltage…)
+  model       String?
+  refrigerant String?
+  voltage     String?
+  active      Boolean @default(true)
+  createdAt   DateTime @default(now())
+
+  materials  BomMaterial[]
+  operations BomOperation[]
+  orders     ProductionOrder[]
+  requests   ProductionRequest[]
+}
+
+model BomMaterial {
+  id        Int     @id @default(autoincrement())
+  bomId     Int
+  bom       Bom     @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+  qty       Float
+  qtyType   QtyType @default(RATIO)
+  wastePct  Float   @default(0)
+  essential Boolean @default(true)
+  remark    String?
+}
+
+model BomOperation {
+  id           Int     @id @default(autoincrement())
+  bomId        Int
+  bom          Bom     @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  operationId  Int
+  operation    Operation @relation(fields: [operationId], references: [id])
+  seq          Int
+  hours        Float   @default(0)
+  hoursType    QtyType @default(RATIO)
+  costPerHour  Float   @default(0)
+  qcTemplateId Int?
+  qcTemplate   QcTemplate? @relation(fields: [qcTemplateId], references: [id])
+  qcMandatory  Boolean @default(false)
+  remark       String?
+
+  steps    ProductionStep[]
+  subs     BomOpSub[]
+  expenses BomOpExpense[]
+  readings BomOpReading[]
+  assets   BomOpAsset[]
+}
+
+model BomOpSub {
+  bomOpId      Int
+  bomOp        BomOperation @relation(fields: [bomOpId], references: [id], onDelete: Cascade)
+  subProcessId Int
+  subProcess   SubProcess   @relation(fields: [subProcessId], references: [id])
+
+  @@id([bomOpId, subProcessId])
+}
+
+model BomOpExpense {
+  id            Int     @id @default(autoincrement())
+  bomOpId       Int
+  bomOp         BomOperation @relation(fields: [bomOpId], references: [id], onDelete: Cascade)
+  expenseTypeId Int
+  expenseType   ExpenseType @relation(fields: [expenseTypeId], references: [id])
+  amount        Float
+  amountType    QtyType @default(RATIO)
+}
+
+model BomOpReading {
+  id          Int     @id @default(autoincrement())
+  bomOpId     Int
+  bomOp       BomOperation @relation(fields: [bomOpId], references: [id], onDelete: Cascade)
+  parameterId Int
+  parameter   Parameter @relation(fields: [parameterId], references: [id])
+  min         Float   @default(0)
+  max         Float   @default(0)
+  mandatory   Boolean @default(false)
+}
+
+model BomOpAsset {
+  id      Int     @id @default(autoincrement())
+  bomOpId Int
+  bomOp   BomOperation @relation(fields: [bomOpId], references: [id], onDelete: Cascade)
+  assetId Int
+  asset   Asset   @relation(fields: [assetId], references: [id])
+  hours   Float   @default(0)
+}
+
+// ───────────── Production request → order ─────────────
+
+model ProductionRequest {
+  id        Int      @id @default(autoincrement())
+  no        String   @unique
+  productId Int
+  bomId     Int
+  bom       Bom      @relation(fields: [bomId], references: [id])
+  clientId  Int?
+  client    Client?  @relation(fields: [clientId], references: [id])
+  salesRef  String?
+  priority  Int      @default(2) // 1 high · 2 normal · 3 low
+  qty       Float
+  dueDate   DateTime?
+  status    RequestStatus @default(NEW)
+  remark    String?
+  createdAt DateTime @default(now())
+
+  order ProductionOrder?
+}
+
+model ProductionOrder {
+  id        Int      @id @default(autoincrement())
+  no        String   @unique
+  requestId Int?     @unique
+  request   ProductionRequest? @relation(fields: [requestId], references: [id])
+  bomId     Int
+  bom       Bom      @relation(fields: [bomId], references: [id])
+  lineId    Int?
+  line      ProductionLine? @relation(fields: [lineId], references: [id])
+  branchId  Int?
+  branch    Branch?  @relation(fields: [branchId], references: [id])
+  priority  Int      @default(2)
+  remark    String?
+  plannedQty  Float
+  producedQty Float  @default(0)
+  status    PoStatus @default(DRAFT)
+  plannedStart DateTime?
+  plannedEnd   DateTime?
+  plannedMaterialCost Float @default(0)
+  plannedLaborCost    Float @default(0)
+  plannedExpenseCost  Float @default(0)
+  actualMaterialCost  Float @default(0)
+  actualLaborCost     Float @default(0)
+  actualExpenseCost   Float @default(0)
+  lotNo       String?
+  closeReason String?
+  closedAt    DateTime?
+  createdAt   DateTime @default(now())
+
+  materials    PoMaterial[]
+  units        ProductionUnit[]
+  moves        StockMove[]
+  consumptions Consumption[]
+  receipts     Receipt[]
+  expenses     Expense[]
+  repairs      RepairLog[]
+  purchases    PurchaseRequest[]
+}
+
+model PoMaterial {
+  id         Int     @id @default(autoincrement())
+  orderId    Int
+  order      ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId  Int
+  product    Product @relation(fields: [productId], references: [id])
+  plannedQty Float
+  usedQty    Float   @default(0)
+  unitCost   Float   @default(0)
+  qtyType    QtyType
+  essential  Boolean @default(true)
+}
+
+model ProductionUnit {
+  id       Int     @id @default(autoincrement())
+  orderId  Int
+  order    ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  serial   String  @unique
+  status   StepStatus @default(PENDING)
+  received Boolean @default(false)
+
+  steps        ProductionStep[]
+  qc           QcCheck[]
+  consumptions Consumption[]
+  receipts     Receipt[]
+  repairs      RepairLog[]
+
+  @@index([orderId])
+}
+
+model ProductionStep {
+  id          Int     @id @default(autoincrement())
+  unitId      Int
+  unit        ProductionUnit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  bomOpId     Int
+  bomOp       BomOperation @relation(fields: [bomOpId], references: [id])
+  status      StepStatus @default(PENDING)
+  startedAt   DateTime?
+  endedAt     DateTime?
+  completedBy String?
+
+  time      TimeEntry[]
+  equipment EquipmentEntry[]
+  readings  ReadingEntry[]
+
+  @@unique([unitId, bomOpId])
+}
+
+model TimeEntry {
+  id       Int     @id @default(autoincrement())
+  stepId   Int
+  step     ProductionStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  memberId Int
+  member   TeamMember @relation(fields: [memberId], references: [id])
+  minutes  Float
+  hourRate Float
+  cost     Float
+  at       DateTime @default(now())
+}
+
+model EquipmentEntry {
+  id      Int     @id @default(autoincrement())
+  stepId  Int
+  step    ProductionStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  assetId Int
+  asset   Asset   @relation(fields: [assetId], references: [id])
+  minutes Float
+  rate    Float
+  cost    Float
+  at      DateTime @default(now())
+}
+
+model ReadingEntry {
+  id          Int     @id @default(autoincrement())
+  stepId      Int
+  step        ProductionStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  parameterId Int
+  parameter   Parameter @relation(fields: [parameterId], references: [id])
+  value       Float
+  inRange     Boolean
+  at          DateTime @default(now())
+}
+
+model QcCheck {
+  id         Int     @id @default(autoincrement())
+  unitId     Int
+  unit       ProductionUnit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  templateId Int
+  result     QcResult
+  failAction FailAction?
+  remark     String?
+  at         DateTime @default(now())
+}
+
+// ───────────── Inventory, purchasing & misc ledgers ─────────────
+
+model StockMove {
+  id        Int     @id @default(autoincrement())
+  type      StockMoveType
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+  qty       Float
+  unitCost  Float   @default(0)
+  orderId   Int?
+  order     ProductionOrder? @relation(fields: [orderId], references: [id])
+  batchId   Int?
+  batch     Batch?  @relation(fields: [batchId], references: [id])
+  at        DateTime @default(now())
+  note      String?
+
+  @@index([productId])
+  @@index([orderId])
+}
+
+model PurchaseRequest {
+  id         Int     @id @default(autoincrement())
+  no         String  @unique
+  productId  Int
+  product    Product @relation(fields: [productId], references: [id])
+  qty        Float
+  orderId    Int?
+  order      ProductionOrder? @relation(fields: [orderId], references: [id])
+  supplierId Int?
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
+  status     PurchaseStatus @default(OPEN)
+  remark     String?
+  createdAt  DateTime @default(now())
+}
+
+model Consumption {
+  id        Int     @id @default(autoincrement())
+  orderId   Int
+  order     ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  unitId    Int?
+  unit      ProductionUnit? @relation(fields: [unitId], references: [id])
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+  qty       Float
+  unitCost  Float
+  batchId   Int?
+  batch     Batch?  @relation(fields: [batchId], references: [id])
+  at        DateTime @default(now())
+}
+
+model Receipt {
+  id       Int     @id @default(autoincrement())
+  orderId  Int
+  order    ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  unitId   Int?
+  unit     ProductionUnit? @relation(fields: [unitId], references: [id])
+  qty      Float
+  unitCost Float
+  at       DateTime @default(now())
+}
+
+model Expense {
+  id            Int     @id @default(autoincrement())
+  orderId       Int
+  order         ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  expenseTypeId Int?
+  expenseType   ExpenseType? @relation(fields: [expenseTypeId], references: [id])
+  name          String
+  amount        Float
+  at            DateTime @default(now())
+}
+
+model RepairLog {
+  id         Int     @id @default(autoincrement())
+  orderId    Int
+  order      ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  unitId     Int
+  unit       ProductionUnit @relation(fields: [unitId], references: [id])
+  issue      String
+  fix        String?
+  status     String  @default("OPEN") // OPEN | SUBMITTED | APPROVED
+  reportedAt DateTime @default(now())
+  approvedAt DateTime?
+}
+
+model Setting {
+  key   String @id
+  value String
+}

@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+/* Industrial blue theme: deep navy chrome, steel-blue surfaces, bright blue accents. */
+:root {
+  --navy-950: #071426;
+  --navy-900: #0a1c36;
+  --navy-800: #0f2a4d;
+  --blue-600: #1d6fe0;
+  --blue-500: #2f86f0;
+  --blue-400: #5aa3f5;
+  --blue-100: #dbeafe;
+  --steel-50: #f3f6fb;
+  --steel-100: #e8eef7;
+  --steel-200: #d3deec;
+  --ink: #0b1b33;
+  --muted: #5b6b82;
+}
+
+@theme inline {
+  --color-navy-950: var(--navy-950);
+  --color-navy-900: var(--navy-900);
+  --color-navy-800: var(--navy-800);
+  --color-brand: var(--blue-600);
+  --color-brand-light: var(--blue-500);
+  --color-steel-50: var(--steel-50);
+  --color-steel-100: var(--steel-100);
+  --color-steel-200: var(--steel-200);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --font-sans: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+body {
+  background: var(--steel-50);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  /* subtle engineering-paper grid */
+  background-image:
+    linear-gradient(rgba(29, 111, 224, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(29, 111, 224, 0.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.card-lift { transition: box-shadow .15s, transform .15s; }
+.card-lift:hover { box-shadow: 0 6px 20px rgba(15, 42, 77, .10); transform: translateY(-1px); }
+
+.hazard {
+  background: repeating-linear-gradient(135deg, var(--blue-600) 0 10px, var(--navy-900) 10px 20px);
+}
+
+/* Printing: hide app chrome, keep labels */
+@media print {
+  aside, .no-print { display: none !important; }
+  body { background: #fff !important; background-image: none !important; display: block !important; }
+  main { padding: 0 !important; }
+}
